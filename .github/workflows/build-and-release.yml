@@ -87,18 +87,23 @@ jobs:
         run: |
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
           echo "ndk.dir=${{ steps.setup-ndk.outputs.ndk-path }}" >> local.properties
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee ../build.log || (echo "=== BUILD ERROR ===" && tail -n 100 ../build.log && exit 1)
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Prepare APK Artifact
         run: |
-          find android-client/app/build/outputs/apk -name "*.apk" -exec cp {} ZeroPulseLink-Android.apk \;
+          echo "Finding generated APK..."
+          find . -name "*.apk"
+          APK_PATH=$(find . -name "*.apk" | head -n 1)
+          echo "Selected APK: $APK_PATH"
+          cp "$APK_PATH" ZeroPulseLink-Android.apk
+          ls -lh ZeroPulseLink-Android.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZeroPulseLink-Android-APK
           path: ZeroPulseLink-Android.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
   publish-pre-release:
     name: Create GitHub Pre-Release
