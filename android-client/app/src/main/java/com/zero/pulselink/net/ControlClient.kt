@@ -54,9 +54,9 @@ class ControlClient(
                 launchTelemetryLoop(writer)
 
                 // Read server messages loop
-                var line: String?
-                while (isActive && reader.readLine().also { line = it } != null) {
-                    line?.let { handleServerMessage(it) }
+                while (isActive) {
+                    val line = reader.readLine() ?: break
+                    handleServerMessage(line)
                 }
             } catch (e: Exception) {
                 Log.e(tag, "Control connection failed: ${e.message}")
