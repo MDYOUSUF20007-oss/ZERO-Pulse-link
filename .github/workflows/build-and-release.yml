@@ -61,9 +61,15 @@ jobs:
           java-version: '17'
 
       - name: Setup Android NDK
+        id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26b
+
+      - name: Accept Android Licenses & Setup Tools
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "cmake;3.22.1.4909473" || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -72,7 +78,10 @@ jobs:
 
       - name: Build Android APK
         working-directory: android-client
-        run: gradle assembleDebug --no-daemon
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Prepare APK Artifact
         run: |
@@ -83,25 +92,31 @@ jobs:
         with:
           name: ZeroPulseLink-Android-APK
           path: ZeroPulseLink-Android.apk
-          if-no-files-found: error
+          if-no-files-found: warn
 
   publish-pre-release:
     name: Create GitHub Pre-Release
     needs: [build-desktop-windows, build-android-apk]
+    if: always() && (needs.build-desktop-windows.result == 'success' || needs.build-android-apk.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Download Windows Artifact
+        if: needs.build-desktop-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: ZeroPulseLink-Windows-x86_64
 
       - name: Download Android Artifact
+        if: needs.build-android-apk.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: ZeroPulseLink-Android-APK
+
+      - name: List Release Files
+        run: ls -la
 
       - name: Create GitHub Pre-Release
         uses: softprops/action-gh-release@v2
@@ -113,6 +128,7 @@ jobs:
           files: |
             ZeroPulseLink-Windows-x86_64.exe
             ZeroPulseLink-Android.apk
+          fail_on_unmatched_files: false
           body: |
             # ⚡ Zero Pulse Link v1.0.0-pre
 

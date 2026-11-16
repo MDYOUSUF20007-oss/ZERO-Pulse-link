@@ -121,7 +121,7 @@ class DiscoveryClient(private val context: Context) {
                         try {
                             socket.receive(recvPacket)
                             val jsonString = String(recvPacket.data, 0, recvPacket.length)
-                            val beacon = pulseLinkJson.decodeFromString<DiscoveryBeacon>(jsonString)
+                            val beacon = DiscoveryBeacon.fromJson(jsonString)
                             val originHost = recvPacket.address.hostAddress ?: ""
                             val mergedAddrs = (beacon.addresses + originHost).distinct().filter { it.isNotBlank() }
                             addDiscoveredBeacon(beacon.copy(addresses = mergedAddrs))

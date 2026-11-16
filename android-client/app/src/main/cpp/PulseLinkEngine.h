@@ -2,6 +2,7 @@
 #define PULSELINK_PULSE_LINK_ENGINE_H
 
 #include <cstdint>
+#include <vector>
 #include <memory>
 #include <atomic>
 #include <aaudio/AAudio.h>

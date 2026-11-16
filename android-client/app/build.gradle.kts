@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.zero.pulselink"
     compileSdk = 34
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.zero.pulselink"
@@ -88,9 +89,6 @@ dependencies {
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
-
-    // JSON serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
     // Media and Foreground Service
     implementation("androidx.media:media:1.7.0")
