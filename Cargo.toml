@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "protocol-common",
+    "desktop-server",
+]
+resolver = "2"

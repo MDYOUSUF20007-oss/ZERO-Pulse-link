@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Zero Pulse Link</string>
+    <string name="notification_channel_name">Zero Pulse Link Audio Stream</string>
+    <string name="notification_channel_desc">Active lossless low-latency audio streaming session</string>
+</resources>
