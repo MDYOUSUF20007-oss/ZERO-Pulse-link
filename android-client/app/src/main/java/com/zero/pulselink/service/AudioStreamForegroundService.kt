@@ -1,6 +1,8 @@
 package com.zero.pulselink.service
 
+import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
@@ -63,7 +65,7 @@ class AudioStreamForegroundService : Service() {
                 toggleMute()
             }
         }
-        return START_NOT_STICKY
+        return Service.START_NOT_STICKY
     }
 
     fun startStreamingSession(host: String, isUsbAdb: Boolean) {
@@ -126,7 +128,7 @@ class AudioStreamForegroundService : Service() {
         NativeAudioEngine.destroyEngine()
         powerLockManager.releaseLocks()
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopForeground(Service.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
@@ -181,7 +183,7 @@ class AudioStreamForegroundService : Service() {
                 latencyMs.value,
                 isMuted.value
             )
-            val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(MediaNotificationManager.NOTIFICATION_ID, notification)
         }
     }

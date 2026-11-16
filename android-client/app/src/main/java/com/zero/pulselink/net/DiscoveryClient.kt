@@ -41,7 +41,7 @@ class DiscoveryClient(private val context: Context) {
 
     private fun startNsdDiscovery() {
         try {
-            nsdDiscoveryListener = object : NsdManager.DiscoveryListener {
+            val listener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
                     Log.e(tag, "NSD Discovery start failed: $errorCode")
                 }
@@ -64,7 +64,8 @@ class DiscoveryClient(private val context: Context) {
 
                 override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
             }
-            nsdManager?.discoverServices("_zeropulselink._tcp", NsdManager.PROTOCOL_DNS_SD, nsdDiscoveryListener)
+            nsdDiscoveryListener = listener
+            nsdManager?.discoverServices("_zeropulselink._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (e: Exception) {
             Log.w(tag, "NSD discoverServices exception: ${e.message}")
         }

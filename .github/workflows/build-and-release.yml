@@ -86,17 +86,16 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
-          gradle assembleDebug --no-daemon --stacktrace > ../build.log 2>&1 || {
-            echo "::error::Build failed! Printing log:"
-            tail -n 120 ../build.log
-            exit 1
-          }
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Prepare APK Artifact
         run: |
           echo "Finding generated APK..."
           find . -name "*.apk"
-          APK_PATH=$(find . -name "*.apk" | head -n 1)
+          APK_PATH=$(find . -name "*.apk" | grep -i "debug" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find . -name "*.apk" | head -n 1)
+          fi
           echo "Selected APK: $APK_PATH"
           cp "$APK_PATH" ZeroPulseLink-Android.apk
           ls -lh ZeroPulseLink-Android.apk

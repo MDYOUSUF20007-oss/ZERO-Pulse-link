@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableStateFlow
 import com.zero.pulselink.net.DiscoveryBeacon
 import com.zero.pulselink.net.DiscoveryClient
 import com.zero.pulselink.service.AudioStreamForegroundService
@@ -56,7 +57,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ZeroPulseLinkTheme {
                 val service = audioService
-                val isStreaming = service?.isStreaming?.collectAsState()?.value ?: false
+                val isStreaming by (service?.isStreaming ?: remember { MutableStateFlow(false) }).collectAsState()
                 val discoveredServers by discoveryClient.discoveredServers.collectAsState()
 
                 if (isStreaming && service != null) {
