@@ -66,10 +66,13 @@ jobs:
         with:
           ndk-version: r26b
 
-      - name: Accept Android Licenses & Setup Tools
+      - name: Configure Android SDK Permissions and Tools
         run: |
+          sudo chown -R runner:runner $ANDROID_HOME
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "cmake;3.22.1.4909473" || true
+          mkdir -p $ANDROID_HOME/ndk
+          ln -sfn ${{ steps.setup-ndk.outputs.ndk-path }} $ANDROID_HOME/ndk/26.1.10909125
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -82,8 +85,6 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          mkdir -p /usr/local/lib/android/sdk/ndk
-          ln -sfn ${{ steps.setup-ndk.outputs.ndk-path }} /usr/local/lib/android/sdk/ndk/26.1.10909125
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
           echo "ndk.dir=${{ steps.setup-ndk.outputs.ndk-path }}" >> local.properties
           gradle assembleDebug --no-daemon --stacktrace
