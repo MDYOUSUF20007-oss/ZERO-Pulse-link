@@ -8,11 +8,6 @@ android {
     compileSdk = 34
     ndkVersion = "26.1.10909125"
 
-    val ndkEnv = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT")
-    if (ndkEnv != null && file(ndkEnv).exists()) {
-        ndkPath = ndkEnv
-    }
-
     defaultConfig {
         applicationId = "com.zero.pulselink"
         minSdk = 26

@@ -86,7 +86,6 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
-          echo "ndk.dir=${{ steps.setup-ndk.outputs.ndk-path }}" >> local.properties
           gradle assembleDebug --no-daemon --stacktrace > ../build.log 2>&1 || {
             echo "::error::Build failed! Printing log:"
             tail -n 120 ../build.log
