@@ -1,23 +1,26 @@
 package com.zero.pulselink.service
 
+import android.Manifest
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.zero.pulselink.engine.NativeAudioEngine
 import com.zero.pulselink.net.BufferProfile
+import com.zero.pulselink.net.ConnectionState
 import com.zero.pulselink.net.ControlClient
 import com.zero.pulselink.net.StereoRouting
 import com.zero.pulselink.net.TcpAudioReceiver
 import com.zero.pulselink.net.UdpAudioReceiver
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 class AudioStreamForegroundService : Service() {
 
@@ -31,15 +34,21 @@ class AudioStreamForegroundService : Service() {
     private var controlClient: ControlClient? = null
     private var udpAudioReceiver: UdpAudioReceiver? = null
     private var tcpAudioReceiver: TcpAudioReceiver? = null
+    private var telemetryJob: Job? = null
 
     // Session State
+    val connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionError = MutableStateFlow<String?>(null)
     val isStreaming = MutableStateFlow(false)
     val serverName = MutableStateFlow("Zero Pulse Link Server")
     val activeCodec = MutableStateFlow("PCM 16-bit Lossless")
+    val sampleRateHz = MutableStateFlow(48000)
     val latencyMs = MutableStateFlow(0f)
     val packetLossPct = MutableStateFlow(0f)
     val bufferFillMs = MutableStateFlow(25f)
     val underruns = MutableStateFlow(0)
+    val vuLeft = MutableStateFlow(0f)
+    val vuRight = MutableStateFlow(0f)
     val volumeLevel = MutableStateFlow(1.0f) // 0.0 to 2.0 (+15dB boost)
     val isMuted = MutableStateFlow(false)
     val stereoRouting = MutableStateFlow(StereoRouting.STEREO)
@@ -68,54 +77,120 @@ class AudioStreamForegroundService : Service() {
         return Service.START_NOT_STICKY
     }
 
-    fun startStreamingSession(host: String, isUsbAdb: Boolean) {
-        stopStreamingSession()
-        powerLockManager.acquireLocks()
+    fun startStreamingSession(host: String, isUsbAdb: Boolean, controlPort: Int = 59100) {
+        startStreamingSession(listOf(host), isUsbAdb, controlPort)
+    }
 
-        // Initialize Native Audio Engine (48kHz, 2 channels, default Balanced profile)
-        NativeAudioEngine.initEngine(48000, 2, bufferProfile.value.code)
-        NativeAudioEngine.startStream()
+    fun startStreamingSession(hosts: List<String>, isUsbAdb: Boolean, controlPort: Int = 59100) {
+        teardownSession(clearError = true)
+        connectionState.value = ConnectionState.CONNECTING
 
-        // Start Foreground Service with Notification
-        val notification = notificationManager.buildNotification(
-            serverName.value,
-            activeCodec.value,
-            latencyMs.value,
-            isMuted.value
+        val client = ControlClient(
+            hosts = hosts,
+            port = controlPort,
+            onHandshakeConfirmed = { connectedHost, remoteName, rate, channels, codec ->
+                serviceScope.launch(Dispatchers.Main) {
+                    if (isStreaming.value) {
+                        // Already running; just update metadata
+                        serverName.value = remoteName
+                        activeCodec.value = codec
+                        updateNotification()
+                        return@launch
+                    }
+
+                    serverName.value = remoteName
+                    activeCodec.value = codec
+                    sampleRateHz.value = rate
+
+                    powerLockManager.acquireLocks()
+
+                    // Initialize Native AAudio Engine with exact negotiated sample rate & channels
+                    NativeAudioEngine.initEngine(rate, channels, bufferProfile.value.code)
+                    NativeAudioEngine.setVolume(if (isMuted.value) 0f else volumeLevel.value)
+                    NativeAudioEngine.setStereoRouting(stereoRouting.value.code)
+                    NativeAudioEngine.startStream()
+
+                    // Start Foreground Service safely across Android versions (API 26–34)
+                    val notification = notificationManager.buildNotification(
+                        serverName.value,
+                        activeCodec.value,
+                        latencyMs.value,
+                        isMuted.value
+                    )
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val hasMicPerm = ContextCompat.checkSelfPermission(
+                                this@AudioStreamForegroundService,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                            val type = if (hasMicPerm) {
+                                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                            } else {
+                                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                            }
+                            startForeground(MediaNotificationManager.NOTIFICATION_ID, notification, type)
+                        } else {
+                            startForeground(MediaNotificationManager.NOTIFICATION_ID, notification)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(tag, "startForeground warning: ${e.message}")
+                    }
+
+                    // Start Audio Transport AFTER PC confirmed handshake
+                    if (isUsbAdb || connectedHost == "127.0.0.1") {
+                        tcpAudioReceiver = TcpAudioReceiver(host = connectedHost)
+                        tcpAudioReceiver?.start()
+                    } else {
+                        val cid = controlClient?.clientId ?: "zero-android"
+                        udpAudioReceiver = UdpAudioReceiver(serverHost = connectedHost, clientId = cid)
+                        udpAudioReceiver?.start()
+                    }
+
+                    connectionError.value = null
+                    connectionState.value = ConnectionState.CONNECTED
+                    isStreaming.value = true
+                    launchTelemetryTracker()
+                }
+            },
+            onDisconnected = { errorMsg ->
+                serviceScope.launch(Dispatchers.Main) {
+                    teardownSession(clearError = false)
+                    if (errorMsg != null) {
+                        connectionError.value = errorMsg
+                        connectionState.value = ConnectionState.ERROR
+                    } else {
+                        connectionState.value = ConnectionState.DISCONNECTED
+                    }
+                }
+            }
         )
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
-                       ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            startForeground(MediaNotificationManager.NOTIFICATION_ID, notification, type)
-        } else {
-            startForeground(MediaNotificationManager.NOTIFICATION_ID, notification)
-        }
+        controlClient = client
+        client.connect()
+    }
 
-        // Initialize TCP Control Channel
-        controlClient = ControlClient(host) { rate, channels, codec ->
-            activeCodec.value = codec
-            updateNotification()
+    fun clearError() {
+        connectionError.value = null
+        if (connectionState.value == ConnectionState.ERROR) {
+            connectionState.value = ConnectionState.DISCONNECTED
         }
-        controlClient?.connect()
-
-        // Initialize Audio Transport
-        if (isUsbAdb || host == "127.0.0.1") {
-            // TCP NoDelay tunnel for USB wired mode
-            tcpAudioReceiver = TcpAudioReceiver(host = host)
-            tcpAudioReceiver?.start()
-        } else {
-            // UDP with DSCP 0xB8 for Wi-Fi and USB Tethering
-            udpAudioReceiver = UdpAudioReceiver()
-            udpAudioReceiver?.start()
-        }
-
-        isStreaming.value = true
-        launchTelemetryTracker()
     }
 
     fun stopStreamingSession() {
+        teardownSession(clearError = true)
+        connectionState.value = ConnectionState.DISCONNECTED
+    }
+
+    private fun teardownSession(clearError: Boolean) {
         isStreaming.value = false
+        vuLeft.value = 0f
+        vuRight.value = 0f
+
+        telemetryJob?.cancel()
+        telemetryJob = null
+
         udpAudioReceiver?.stop()
         udpAudioReceiver = null
         tcpAudioReceiver?.stop()
@@ -128,24 +203,42 @@ class AudioStreamForegroundService : Service() {
         NativeAudioEngine.destroyEngine()
         powerLockManager.releaseLocks()
 
-        stopForeground(Service.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        try {
+            stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
+
+        if (clearError) {
+            connectionError.value = null
+        }
     }
 
     private fun launchTelemetryTracker() {
-        serviceScope.launch {
+        telemetryJob?.cancel()
+        telemetryJob = serviceScope.launch {
+            var tick = 0
             while (isActive && isStreaming.value) {
                 val tele = NativeAudioEngine.getTelemetry()
-                packetLossPct.value = tele[1]
-                bufferFillMs.value = tele[2]
-                underruns.value = tele[3].toInt()
-
-                controlClient?.let {
-                    latencyMs.value = it.rttMs.value
+                if (tele.size >= 7) {
+                    vuLeft.value = tele[5]
+                    vuRight.value = tele[6]
                 }
 
-                updateNotification()
-                delay(1000)
+                // Update telemetry cards & notification every ~500ms (10 ticks x 50ms)
+                if (tick % 10 == 0) {
+                    if (tele.size >= 4) {
+                        packetLossPct.value = tele[1]
+                        bufferFillMs.value = tele[2]
+                        underruns.value = tele[3].toInt()
+                    }
+                    controlClient?.let {
+                        latencyMs.value = it.rttMs.value
+                    }
+                    if (tick % 20 == 0) {
+                        updateNotification()
+                    }
+                }
+                tick++
+                delay(50)
             }
         }
     }
@@ -191,7 +284,7 @@ class AudioStreamForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        stopStreamingSession()
+        teardownSession(clearError = true)
         serviceScope.cancel()
         super.onDestroy()
     }

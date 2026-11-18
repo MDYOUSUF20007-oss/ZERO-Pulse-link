@@ -92,4 +92,8 @@ dependencies {
 
     // Media and Foreground Service
     implementation("androidx.media:media:1.7.0")
+
+    // 100% Open-Source Zero-Telemetry QR Code Scanner (ZXing, no Google Play Services)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.3")
 }

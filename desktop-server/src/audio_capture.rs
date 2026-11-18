@@ -63,22 +63,41 @@ impl AudioCaptureEngine {
         let channels = default_config.channels();
         let sample_format = default_config.sample_format();
 
+        // Sync active server config sample rate with actual WASAPI loopback capture rate
+        if let Some(sr) = protocol_common::SampleRate::from_hz(sample_rate) {
+            let state_cfg = Arc::clone(&self.state);
+            let rt_handle = tokio::runtime::Handle::current();
+            rt_handle.spawn(async move {
+                state_cfg.config.write().await.sample_rate = sr;
+            });
+        }
+
+        // Use BufferSize::Default for universal Windows WASAPI loopback compatibility;
+        // we chunk outbound frames to 240 frames (976-byte UDP packets) below MTU.
         let stream_config = StreamConfig {
             channels,
             sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(240), // ~5ms at 48kHz
+            buffer_size: cpal::BufferSize::Default,
         };
 
         let state_clone = Arc::clone(&self.state);
         let network_clone = Arc::clone(&self.network);
 
-        let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<i16>>(64);
+        let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<i16>>(128);
 
-        // Background worker to broadcast audio packets asynchronously
+        // Background worker to chunk and broadcast audio packets (240 stereo frames = 480 samples = 960 bytes)
+        // Guarantees every UDP packet stays well under 1472-byte Wi-Fi MTU (zero fragmentation)
         let rt = tokio::runtime::Handle::current();
         rt.spawn(async move {
+            const CHUNK_SAMPLES: usize = 240 * 2; // 240 stereo frames = 5ms @ 48kHz
+            let mut pending: Vec<i16> = Vec::with_capacity(CHUNK_SAMPLES * 4);
+
             while let Some(pcm_chunk) = pcm_rx.recv().await {
-                network_clone.broadcast_audio_frame(&pcm_chunk).await;
+                pending.extend_from_slice(&pcm_chunk);
+                while pending.len() >= CHUNK_SAMPLES {
+                    let frame: Vec<i16> = pending.drain(..CHUNK_SAMPLES).collect();
+                    network_clone.broadcast_audio_frame(&frame).await;
+                }
             }
         });
 

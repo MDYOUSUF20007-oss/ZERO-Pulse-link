@@ -104,15 +104,15 @@ JNIEXPORT jfloatArray JNICALL
 Java_com_zero_pulselink_engine_NativeAudioEngine_getTelemetry(
     JNIEnv* env,
     jobject /*thiz*/) {
-    jfloatArray result = env->NewFloatArray(5);
+    jfloatArray result = env->NewFloatArray(7);
     if (!result) return nullptr;
 
-    float telemetry[5] = {0.0f};
+    float telemetry[7] = {0.0f};
     if (gEngine) {
         gEngine->getTelemetry(telemetry);
     }
 
-    env->SetFloatArrayRegion(result, 0, 5, telemetry);
+    env->SetFloatArrayRegion(result, 0, 7, telemetry);
     return result;
 }
 

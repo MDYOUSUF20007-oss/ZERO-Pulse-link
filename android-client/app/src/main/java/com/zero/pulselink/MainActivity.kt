@@ -14,17 +14,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.flow.MutableStateFlow
-import com.zero.pulselink.net.DiscoveryBeacon
+import com.zero.pulselink.net.ConnectionState
 import com.zero.pulselink.net.DiscoveryClient
 import com.zero.pulselink.service.AudioStreamForegroundService
 import com.zero.pulselink.ui.screens.DashboardScreen
 import com.zero.pulselink.ui.screens.DeviceDiscoveryScreen
 import com.zero.pulselink.ui.theme.ZeroPulseLinkTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
 
-    private var audioService: AudioStreamForegroundService? = null
+    private var audioService by mutableStateOf<AudioStreamForegroundService?>(null)
     private var isBound by mutableStateOf(false)
     private lateinit var discoveryClient: DiscoveryClient
 
@@ -57,7 +57,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             ZeroPulseLinkTheme {
                 val service = audioService
-                val isStreaming by (service?.isStreaming ?: remember { MutableStateFlow(false) }).collectAsState()
+                val fallbackBool = remember { MutableStateFlow(false) }
+                val fallbackConnState = remember { MutableStateFlow(ConnectionState.DISCONNECTED) }
+                val fallbackErr = remember { MutableStateFlow<String?>(null) }
+
+                val isStreaming by (service?.isStreaming ?: fallbackBool).collectAsState()
+                val connState by (service?.connectionState ?: fallbackConnState).collectAsState()
+                val connError by (service?.connectionError ?: fallbackErr).collectAsState()
                 val discoveredServers by discoveryClient.discoveredServers.collectAsState()
 
                 if (isStreaming && service != null) {
@@ -70,8 +76,11 @@ class MainActivity : ComponentActivity() {
                 } else {
                     DeviceDiscoveryScreen(
                         discoveredServers = discoveredServers,
-                        onConnect = { host, isAdb ->
-                            service?.startStreamingSession(host, isAdb)
+                        connectionState = connState,
+                        connectionError = connError,
+                        onClearError = { service?.clearError() },
+                        onConnect = { hosts, isAdb, port ->
+                            service?.startStreamingSession(hosts, isAdb, port)
                         }
                     )
                 }
@@ -83,13 +92,20 @@ class MainActivity : ComponentActivity() {
         val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
+                != PackageManager.PERMISSION_GRANTED
+            ) {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
+            != PackageManager.PERMISSION_GRANTED
+        ) {
             permissions.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissions.add(Manifest.permission.CAMERA)
         }
 
         if (permissions.isNotEmpty()) {
@@ -99,7 +115,7 @@ class MainActivity : ComponentActivity() {
 
     private fun bindAudioService() {
         val intent = Intent(this, AudioStreamForegroundService::class.java)
-        startService(intent) // Ensure service lifecycle stays alive
+        startService(intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 

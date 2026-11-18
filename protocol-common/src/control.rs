@@ -4,6 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
+fn default_max_channels() -> u8 {
+    2
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum StereoRouting {
@@ -69,8 +73,11 @@ pub enum ControlMessage {
         model: String,
         os: String,
         version: String,
+        #[serde(default)]
         supported_codecs: Vec<String>,
+        #[serde(default)]
         supported_rates: Vec<u32>,
+        #[serde(default = "default_max_channels")]
         max_channels: u8,
     },
 

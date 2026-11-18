@@ -2,7 +2,9 @@ package com.zero.pulselink.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,21 +30,27 @@ fun DashboardScreen(
     val isStreaming by service.isStreaming.collectAsState()
     val serverName by service.serverName.collectAsState()
     val codec by service.activeCodec.collectAsState()
+    val sampleRate by service.sampleRateHz.collectAsState()
     val rttMs by service.latencyMs.collectAsState()
     val packetLoss by service.packetLossPct.collectAsState()
     val bufferFill by service.bufferFillMs.collectAsState()
     val underruns by service.underruns.collectAsState()
+    val vuLeft by service.vuLeft.collectAsState()
+    val vuRight by service.vuRight.collectAsState()
     val volume by service.volumeLevel.collectAsState()
     val isMuted by service.isMuted.collectAsState()
     val routing by service.stereoRouting.collectAsState()
     val profile by service.bufferProfile.collectAsState()
 
+    val bitrateMbps = (sampleRate.toFloat() * 2f * 16f) / 1_000_000f
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(AmoledBackground)
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Top Header
         Row(
@@ -50,8 +58,14 @@ fun DashboardScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("ZERO PULSE LINK", fontSize = 20.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = PrimaryCyan)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "ZERO PULSE LINK",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = PrimaryCyan
+                )
                 Text(serverName, fontSize = 13.sp, color = TextSecondary)
             }
             Surface(
@@ -81,17 +95,20 @@ fun DashboardScreen(
         ) {
             Column {
                 Text("CODEC", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.Gray, fontWeight = FontWeight.Bold)
-                Text(codec, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = PrimaryCyan)
+                Text("$codec (${sampleRate / 1000}kHz)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = PrimaryCyan)
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text("THROUGHPUT", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.Gray, fontWeight = FontWeight.Bold)
-                Text("1.536 Mbps (Lossless)", fontSize = 14.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, color = AccentGreen)
+                Text("${String.format("%.3f", bitrateMbps)} Mbps", fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, color = AccentGreen)
             }
         }
 
-        // Live Audio Visualizer
+        // Live Audio Visualizer (driven by real C++ audio peak telemetry)
         Text("AUDIO VISUALIZER", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = Color.Gray)
-        VuMeter(leftLevel = if (isStreaming && !isMuted) 0.65f else 0.0f, rightLevel = if (isStreaming && !isMuted) 0.70f else 0.0f)
+        VuMeter(
+            leftLevel = if (isStreaming && !isMuted) vuLeft else 0.0f,
+            rightLevel = if (isStreaming && !isMuted) vuRight else 0.0f
+        )
 
         // Telemetry Card
         TelemetryCard(
@@ -141,6 +158,43 @@ fun DashboardScreen(
                 Text("0%", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.Gray)
                 Text("100% (Unity)", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Color.Gray)
                 Text("200% (+15dB)", fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = WarningAmber)
+            }
+        }
+
+        // Buffer Profile Selector
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceDark)
+                .padding(14.dp)
+        ) {
+            Text("LATENCY / BUFFER PROFILE", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BufferProfile.values().forEach { prof ->
+                    val isSelected = profile == prof
+                    Button(
+                        onClick = { service.setBufferProfile(prof) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) AccentGreen else SurfaceVariantDark,
+                            contentColor = if (isSelected) AmoledBackground else Color.White
+                        ),
+                        contentPadding = PaddingValues(4.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = when (prof) {
+                                BufferProfile.ULTRA_LOW -> "Ultra-Low"
+                                BufferProfile.BALANCED -> "Balanced"
+                                BufferProfile.HIGH_STABILITY -> "Stable"
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
         }
 

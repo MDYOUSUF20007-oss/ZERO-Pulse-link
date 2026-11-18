@@ -114,6 +114,13 @@ impl ConnectedClient {
         transport_type: ClientTransportType,
         sample_rate: u32,
     ) -> Self {
+        let audio_addr = match transport_type {
+            ClientTransportType::UdpWifi | ClientTransportType::UdpTethering => {
+                Some(SocketAddr::new(control_addr.ip(), protocol_common::DEFAULT_AUDIO_PORT))
+            }
+            ClientTransportType::TcpAdb => None,
+        };
+
         Self {
             id,
             device_name,
@@ -121,7 +128,7 @@ impl ConnectedClient {
             os,
             version,
             control_addr,
-            audio_addr: None,
+            audio_addr,
             transport_type,
             connected_at: Instant::now(),
             last_seen: Instant::now(),

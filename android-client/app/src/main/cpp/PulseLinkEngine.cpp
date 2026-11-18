@@ -31,12 +31,17 @@ PulseLinkEngine::~PulseLinkEngine() {
 bool PulseLinkEngine::init(uint32_t sampleRate, int channels, BufferProfile profile) {
     mSampleRate = sampleRate;
     mChannels = channels;
+    mPendingFrames = 0;
+    mResamplePhase = 0.0;
+    mPeakLeft.store(0.0f, std::memory_order_relaxed);
+    mPeakRight.store(0.0f, std::memory_order_relaxed);
 
     mJitterBuffer = std::make_unique<JitterBuffer>(sampleRate, channels, profile);
     mResampler = std::make_unique<PiResampler>(mJitterBuffer->getTargetFillMs());
 
-    mResampleInputBuffer.resize(2048 * channels, 0);
-    mResampleOutputBuffer.resize(2048 * channels, 0);
+    // Pre-allocate generous scratch buffer (8192 frames) so audio callback never allocates
+    mResampleInputBuffer.assign(8192 * channels, 0);
+    mResampleOutputBuffer.assign(8192 * channels, 0);
 
     return true;
 }
@@ -151,7 +156,7 @@ void PulseLinkEngine::setBufferProfile(BufferProfile profile) {
 
 void PulseLinkEngine::getTelemetry(float* outTelemetry) {
     if (!mJitterBuffer || !mResampler) {
-        std::fill_n(outTelemetry, 5, 0.0f);
+        std::fill_n(outTelemetry, 7, 0.0f);
         return;
     }
 
@@ -160,6 +165,8 @@ void PulseLinkEngine::getTelemetry(float* outTelemetry) {
     outTelemetry[2] = mJitterBuffer->getCurrentFillMs();
     outTelemetry[3] = static_cast<float>(mJitterBuffer->getUnderrunCount());
     outTelemetry[4] = mResampler->updateRatio(mJitterBuffer->getCurrentFillMs(), 0.0f);
+    outTelemetry[5] = mPeakLeft.load(std::memory_order_relaxed);
+    outTelemetry[6] = mPeakRight.load(std::memory_order_relaxed);
 }
 
 aaudio_data_callback_result_t PulseLinkEngine::onAudioCallback(
@@ -168,54 +175,109 @@ aaudio_data_callback_result_t PulseLinkEngine::onAudioCallback(
     int32_t numFrames) {
 
     auto* outPcm = static_cast<int16_t*>(audioData);
-    if (!mIsPlaying.load(std::memory_order_relaxed) || !mJitterBuffer || !mResampler) {
+    if (!mIsPlaying.load(std::memory_order_relaxed) || !mJitterBuffer || !mResampler || numFrames <= 0) {
         std::memset(outPcm, 0, numFrames * mChannels * sizeof(int16_t));
+        mPeakLeft.store(0.0f, std::memory_order_relaxed);
+        mPeakRight.store(0.0f, std::memory_order_relaxed);
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
     // 1. Update PI Resampler Clock Drift Controller
     const float currentFillMs = mJitterBuffer->getCurrentFillMs();
     const float dtSeconds = static_cast<float>(numFrames) / static_cast<float>(mSampleRate);
-    mResampler->updateRatio(currentFillMs, dtSeconds);
+    const float ratio = mResampler->updateRatio(currentFillMs, dtSeconds);
+    const double step = static_cast<double>(ratio);
 
-    // 2. Pull audio frames from jitter buffer
-    const size_t neededInputFrames = static_cast<size_t>(numFrames) + 16;
-    if (mResampleInputBuffer.size() < neededInputFrames * mChannels) {
-        mResampleInputBuffer.resize(neededInputFrames * mChannels * 2);
+    // 2. Pull exact number of input frames required for glitch-free linear interpolation
+    const size_t maxIdx = static_cast<size_t>(std::floor(mResamplePhase + static_cast<double>(numFrames - 1) * step)) + 1;
+    const size_t totalNeeded = maxIdx + 1;
+
+    if (totalNeeded * mChannels > mResampleInputBuffer.size()) {
+        // Safety guard: never allocate on real-time audio thread
+        std::memset(outPcm, 0, numFrames * mChannels * sizeof(int16_t));
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
     }
 
-    mJitterBuffer->pullFrames(mResampleInputBuffer.data(), neededInputFrames);
+    if (totalNeeded > mPendingFrames) {
+        const size_t framesToPull = totalNeeded - mPendingFrames;
+        mJitterBuffer->pullFrames(mResampleInputBuffer.data() + mPendingFrames * mChannels, framesToPull);
+        mPendingFrames = totalNeeded;
+    }
 
-    // 3. Resample via Clock-Drift PI Resampler
-    mResampler->resample(
-        mResampleInputBuffer.data(),
-        neededInputFrames,
-        outPcm,
-        static_cast<size_t>(numFrames),
-        mChannels
-    );
+    // 3. Sample-accurate linear interpolation across sliding input window
+    for (int32_t f = 0; f < numFrames; ++f) {
+        const size_t idx0 = static_cast<size_t>(mResamplePhase);
+        const size_t idx1 = idx0 + 1;
+        const float frac = static_cast<float>(mResamplePhase - static_cast<double>(idx0));
+
+        for (int ch = 0; ch < mChannels; ++ch) {
+            const float s0 = static_cast<float>(mResampleInputBuffer[idx0 * mChannels + ch]);
+            const float s1 = static_cast<float>(mResampleInputBuffer[idx1 * mChannels + ch]);
+            const float interp = s0 + frac * (s1 - s0);
+            outPcm[f * mChannels + ch] = static_cast<int16_t>(std::clamp(interp, -32768.0f, 32767.0f));
+        }
+
+        mResamplePhase += step;
+    }
+
+    // Shift leftover unconsumed frames to front of sliding window
+    size_t consumed = static_cast<size_t>(std::floor(mResamplePhase));
+    if (consumed > mPendingFrames) {
+        consumed = mPendingFrames;
+    }
+    mResamplePhase -= static_cast<double>(consumed);
+    const size_t remaining = mPendingFrames - consumed;
+    if (remaining > 0 && consumed > 0) {
+        std::memmove(
+            mResampleInputBuffer.data(),
+            mResampleInputBuffer.data() + consumed * mChannels,
+            remaining * mChannels * sizeof(int16_t)
+        );
+    }
+    mPendingFrames = remaining;
 
     // 4. Apply Channel Routing
     StereoRouting route = mRouting.load(std::memory_order_relaxed);
-    if (route == StereoRouting::LeftOnly) {
-        for (int32_t i = 0; i < numFrames; ++i) {
-            outPcm[i * 2 + 1] = outPcm[i * 2];
-        }
-    } else if (route == StereoRouting::RightOnly) {
-        for (int32_t i = 0; i < numFrames; ++i) {
-            outPcm[i * 2] = outPcm[i * 2 + 1];
-        }
-    } else if (route == StereoRouting::MonoDownmix) {
-        for (int32_t i = 0; i < numFrames; ++i) {
-            int16_t mono = static_cast<int16_t>((static_cast<int32_t>(outPcm[i * 2]) + static_cast<int32_t>(outPcm[i * 2 + 1])) / 2);
-            outPcm[i * 2] = mono;
-            outPcm[i * 2 + 1] = mono;
+    if (mChannels >= 2) {
+        if (route == StereoRouting::LeftOnly) {
+            for (int32_t i = 0; i < numFrames; ++i) {
+                outPcm[i * 2 + 1] = outPcm[i * 2];
+            }
+        } else if (route == StereoRouting::RightOnly) {
+            for (int32_t i = 0; i < numFrames; ++i) {
+                outPcm[i * 2] = outPcm[i * 2 + 1];
+            }
+        } else if (route == StereoRouting::MonoDownmix) {
+            for (int32_t i = 0; i < numFrames; ++i) {
+                int16_t mono = static_cast<int16_t>((static_cast<int32_t>(outPcm[i * 2]) + static_cast<int32_t>(outPcm[i * 2 + 1])) / 2);
+                outPcm[i * 2] = mono;
+                outPcm[i * 2 + 1] = mono;
+            }
         }
     }
 
     // 5. Apply Volume Boost & Soft-Clipping Limiter
     float vol = mVolume.load(std::memory_order_relaxed);
     applyVolumeAndLimiter(outPcm, numFrames * mChannels, vol);
+
+    // 6. Compute real-time peak VU meter levels
+    float peakL = 0.0f;
+    float peakR = 0.0f;
+    if (mChannels >= 2) {
+        for (int32_t i = 0; i < numFrames; ++i) {
+            float l = std::abs(static_cast<float>(outPcm[i * 2])) / 32768.0f;
+            float r = std::abs(static_cast<float>(outPcm[i * 2 + 1])) / 32768.0f;
+            if (l > peakL) peakL = l;
+            if (r > peakR) peakR = r;
+        }
+    } else {
+        for (int32_t i = 0; i < numFrames; ++i) {
+            float v = std::abs(static_cast<float>(outPcm[i])) / 32768.0f;
+            if (v > peakL) { peakL = v; peakR = v; }
+        }
+    }
+    mPeakLeft.store(peakL, std::memory_order_relaxed);
+    mPeakRight.store(peakR, std::memory_order_relaxed);
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }

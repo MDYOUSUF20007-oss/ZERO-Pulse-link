@@ -5,9 +5,12 @@ import com.zero.pulselink.engine.NativeAudioEngine
 import kotlinx.coroutines.*
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
 
 class UdpAudioReceiver(
+    private val serverHost: String,
+    private val clientId: String,
     private val port: Int = 59101
 ) {
     private val tag = "ZeroPulseLinkUdpReceiver"
@@ -23,6 +26,10 @@ class UdpAudioReceiver(
             try {
                 val sock = DatagramSocket(null)
                 sock.reuseAddress = true
+                try {
+                    sock.receiveBufferSize = 262144
+                } catch (_: Exception) {}
+
                 // DSCP 0xB8 (Expedited Forwarding) for Wi-Fi Multimedia (WMM) Voice Priority
                 try {
                     sock.trafficClass = 0xB8
@@ -30,11 +37,32 @@ class UdpAudioReceiver(
                     Log.w(tag, "Could not set DSCP 0xB8 traffic class: ${e.message}")
                 }
 
-                sock.bind(InetSocketAddress(port))
-                socket = sock
-                Log.i(tag, "Zero Pulse Link UDP Audio Receiver bound to port $port with DSCP 0xB8")
+                try {
+                    sock.bind(InetSocketAddress(port))
+                } catch (e: Exception) {
+                    Log.w(tag, "Port $port busy, binding to ephemeral port for UDP punch: ${e.message}")
+                    sock.bind(InetSocketAddress(0))
+                }
 
-                val buffer = ByteArray(4096)
+                socket = sock
+                Log.i(tag, "Zero Pulse Link UDP Audio Receiver bound to local port ${sock.localPort}")
+
+                // Periodically send UDP NAT-punch / registration packet to PC server:59101
+                val serverAddr = InetAddress.getByName(serverHost)
+                val punchBytes = "ZP_UDP_HELLO:$clientId".toByteArray()
+                launch {
+                    while (isActive) {
+                        try {
+                            val punchPacket = DatagramPacket(punchBytes, punchBytes.size, serverAddr, port)
+                            sock.send(punchPacket)
+                        } catch (e: Exception) {
+                            Log.w(tag, "UDP punch send error: ${e.message}")
+                        }
+                        delay(3000)
+                    }
+                }
+
+                val buffer = ByteArray(8192)
                 val packet = DatagramPacket(buffer, buffer.size)
 
                 while (isActive) {
@@ -57,7 +85,7 @@ class UdpAudioReceiver(
         scope = null
         try {
             socket?.close()
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
         socket = null
     }
 }

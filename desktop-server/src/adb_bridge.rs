@@ -124,37 +124,37 @@ impl AdbController {
         devices
     }
 
-    /// Forward TCP port 59100 and 59101 over USB ADB
+    /// Reverse-forward TCP port 59100 and 59101 over USB ADB (Android 127.0.0.1 -> PC Server)
     pub async fn forward_ports(&self) -> Result<(), String> {
         let Some(adb) = &self.adb_path else {
             return Err("ADB binary not found".into());
         };
 
-        // Forward Control Channel (59100)
+        // Reverse-forward Control Channel (59100) from Android localhost -> PC localhost
         let res1 = Command::new(adb)
-            .args(["forward", "tcp:59100", "tcp:59100"])
+            .args(["reverse", "tcp:59100", "tcp:59100"])
             .output()
             .await
-            .map_err(|e| format!("Failed to forward port 59100: {}", e))?;
+            .map_err(|e| format!("Failed to reverse port 59100: {}", e))?;
 
         if !res1.status.success() {
             let err = String::from_utf8_lossy(&res1.stderr);
-            return Err(format!("adb forward 59100 failed: {}", err));
+            return Err(format!("adb reverse 59100 failed: {}", err));
         }
 
-        // Forward Audio Channel (59101)
+        // Reverse-forward Audio Channel (59101) from Android localhost -> PC localhost
         let res2 = Command::new(adb)
-            .args(["forward", "tcp:59101", "tcp:59101"])
+            .args(["reverse", "tcp:59101", "tcp:59101"])
             .output()
             .await
-            .map_err(|e| format!("Failed to forward port 59101: {}", e))?;
+            .map_err(|e| format!("Failed to reverse port 59101: {}", e))?;
 
         if !res2.status.success() {
             let err = String::from_utf8_lossy(&res2.stderr);
-            return Err(format!("adb forward 59101 failed: {}", err));
+            return Err(format!("adb reverse 59101 failed: {}", err));
         }
 
-        log::info!("Zero Pulse Link successfully forwarded ADB ports: tcp:59100 and tcp:59101");
+        log::info!("Zero Pulse Link successfully reversed ADB ports: tcp:59100 and tcp:59101");
         Ok(())
     }
 

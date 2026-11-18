@@ -84,17 +84,20 @@ impl NetworkManager {
 
         // For each client, apply volume, delay offset, and stereo routing
         for (_client_id, client) in clients_guard.iter() {
-            let mut processed_pcm = vec![0i16; raw_pcm.len()];
-
-            // 1. Sync Offset delay line
-            let mut dl = client.delay_line.clone();
-            dl.process(
-                raw_pcm,
-                &mut processed_pcm,
-                client.sync_offset_ms,
-                sample_rate.hz(),
-                channels.as_u8() as usize,
-            );
+            let mut processed_pcm = if client.sync_offset_ms > 0 {
+                let mut out = vec![0i16; raw_pcm.len()];
+                let mut dl = client.delay_line.clone();
+                dl.process(
+                    raw_pcm,
+                    &mut out,
+                    client.sync_offset_ms,
+                    sample_rate.hz(),
+                    channels.as_u8() as usize,
+                );
+                out
+            } else {
+                raw_pcm.to_vec()
+            };
 
             // 2. Stereo routing
             CodecFramer::apply_stereo_routing(&mut processed_pcm, &client.stereo_routing);
@@ -410,23 +413,88 @@ impl NetworkManager {
         }
     }
 
-    /// Retrieve all local IPv4 addresses (LAN, Wi-Fi, USB Tethering, Loopback)
-    pub fn get_all_local_ips() -> Vec<String> {
-        let mut ips = HashSet::new();
-        ips.insert("127.0.0.1".to_string());
+    /// Listen for UDP registration/NAT-punch packets on port 59101 from Android clients
+    /// so we always route audio to the client's exact reachable UDP socket address.
+    pub async fn run_udp_punch_listener(self: Arc<Self>) {
+        let mut buf = [0u8; 256];
+        log::info!("Zero Pulse Link UDP Audio Punch Listener active on UDP port {}", DEFAULT_AUDIO_PORT);
 
+        loop {
+            match self.udp_socket.recv_from(&mut buf).await {
+                Ok((len, peer_addr)) => {
+                    let msg = String::from_utf8_lossy(&buf[..len]);
+                    if let Some(cid) = msg.trim().strip_prefix("ZP_UDP_HELLO:") {
+                        let mut clients = self.state.clients.write().await;
+                        if let Some(client) = clients.get_mut(cid) {
+                            if client.audio_addr != Some(peer_addr) {
+                                log::info!("Updated UDP audio destination for {} -> {}", cid, peer_addr);
+                                client.audio_addr = Some(peer_addr);
+                            }
+                        } else {
+                            // Fallback: match by IP address if ClientHello hasn't arrived yet or ID differs
+                            for c in clients.values_mut() {
+                                if c.control_addr.ip() == peer_addr.ip() {
+                                    c.audio_addr = Some(peer_addr);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::debug!("UDP punch recv error: {}", e);
+                    sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    /// Retrieve all local IPv4 addresses, prioritizing the OS primary LAN/Wi-Fi IP first.
+    pub fn get_all_local_ips() -> Vec<String> {
+        let mut ordered = Vec::new();
+        let mut seen = HashSet::new();
+
+        // 1. Primary default-route LAN/Wi-Fi IP first
+        if let Ok(IpAddr::V4(primary)) = local_ip_address::local_ip() {
+            if !primary.is_loopback() && !primary.is_link_local() {
+                let s = primary.to_string();
+                seen.insert(s.clone());
+                ordered.push(s);
+            }
+        }
+
+        // 2. Remaining non-loopback, non-link-local IPv4 addresses (192.168.*, 10.*, 172.*)
+        let mut others = Vec::new();
         if let Ok(interfaces) = list_afinet_netifas() {
             for (_name, ip) in interfaces {
                 if let IpAddr::V4(ipv4) = ip {
-                    if !ipv4.is_loopback() {
-                        ips.insert(ipv4.to_string());
+                    if !ipv4.is_loopback() && !ipv4.is_link_local() {
+                        let s = ipv4.to_string();
+                        if seen.insert(s.clone()) {
+                            others.push(s);
+                        }
                     }
                 }
             }
         }
+        // Prefer 192.168.* over virtual 172.*/10.* adapters
+        others.sort_by_key(|ip| {
+            if ip.starts_with("192.168.42.") || ip.starts_with("192.168.43.") {
+                (0, ip.clone())
+            } else if ip.starts_with("192.168.") {
+                (1, ip.clone())
+            } else if ip.starts_with("10.") {
+                (2, ip.clone())
+            } else {
+                (3, ip.clone())
+            }
+        });
+        ordered.extend(others);
 
-        let mut sorted: Vec<String> = ips.into_iter().collect();
-        sorted.sort();
-        sorted
+        // 3. Loopback for USB ADB mode last
+        if seen.insert("127.0.0.1".to_string()) {
+            ordered.push("127.0.0.1".to_string());
+        }
+
+        ordered
     }
 }

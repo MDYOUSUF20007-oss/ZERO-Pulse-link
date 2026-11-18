@@ -53,10 +53,14 @@ private:
     std::atomic<float> mVolume{1.0f};
     std::atomic<StereoRouting> mRouting{StereoRouting::Stereo};
     std::atomic<bool> mIsPlaying{false};
+    std::atomic<float> mPeakLeft{0.0f};
+    std::atomic<float> mPeakRight{0.0f};
 
-    // Intermediate scratch buffers for resampling and limiter
+    // Intermediate scratch buffers & sliding window state for glitch-free resampling
     std::vector<int16_t> mResampleInputBuffer;
     std::vector<int16_t> mResampleOutputBuffer;
+    size_t mPendingFrames{0};
+    double mResamplePhase{0.0};
 
     // Soft-clipping limiter & volume curve
     static float softClip(float sample);

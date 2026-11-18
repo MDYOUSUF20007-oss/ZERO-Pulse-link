@@ -59,6 +59,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // 5b. Spawn UDP Audio Punch Listener (port 59101)
+    let net_punch = Arc::clone(&network);
+    tokio::spawn(async move {
+        net_punch.run_udp_punch_listener().await;
+    });
+
     // 6. Start WASAPI Audio Loopback Capture
     let audio_engine = Arc::new(AudioCaptureEngine::new(Arc::clone(&state), Arc::clone(&network)));
     let _stream = match Arc::clone(&audio_engine).start_loopback_capture() {
@@ -110,21 +116,30 @@ pub struct PulseLinkGuiApp {
     adb: Arc<AdbController>,
     selected_device_name: String,
     local_ips: Vec<String>,
-    qr_ascii: String,
+    qr_matrix: Option<(usize, Vec<bool>)>,
+    qr_payload: String,
 }
 
 impl PulseLinkGuiApp {
     pub fn new(state: Arc<AppState>, adb: Arc<AdbController>) -> Self {
         let local_ips = NetworkManager::get_all_local_ips();
-        let qr_ascii = generate_qr_ascii(&local_ips);
+        let (qr_payload, qr_matrix) = generate_qr_matrix(&local_ips);
 
         Self {
             state,
             adb,
             selected_device_name: "Default PC Audio Output".into(),
             local_ips,
-            qr_ascii,
+            qr_matrix,
+            qr_payload,
         }
+    }
+
+    fn refresh_ips(&mut self) {
+        self.local_ips = NetworkManager::get_all_local_ips();
+        let (payload, matrix) = generate_qr_matrix(&self.local_ips);
+        self.qr_payload = payload;
+        self.qr_matrix = matrix;
     }
 }
 
@@ -173,27 +188,52 @@ impl eframe::App for PulseLinkGuiApp {
 
                 // Connection & Zero-Config Discovery Card
                 ui.group(|ui| {
-                    ui.label(egui::RichText::new("📡 Network & Zero-Config Pairing").strong());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("📡 Network & Zero-Config Pairing").strong());
+                        if ui.small_button("🔄 Refresh IPs").clicked() {
+                            self.refresh_ips();
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.label("Connect your phone via Wi-Fi or USB to any of these IPs:");
-                            for ip in &self.local_ips {
+                            ui.label("Scan the QR code in the mobile app, or connect to any IP:");
+                            for (idx, ip) in self.local_ips.iter().enumerate() {
                                 let badge = if ip == "127.0.0.1" {
                                     "(ADB USB Mode)"
-                                } else if ip.starts_with("192.168.42.") {
+                                } else if ip.starts_with("192.168.42.") || ip.starts_with("192.168.43.") {
                                     "(USB Tethering)"
+                                } else if idx == 0 {
+                                    "(Primary Wi-Fi LAN)"
                                 } else {
-                                    "(Wi-Fi LAN)"
+                                    "(LAN / Virtual)"
                                 };
-                                ui.monospace(format!("• {}:59100  {}", ip, badge));
+                                let color = if idx == 0 && ip != "127.0.0.1" {
+                                    egui::Color32::from_rgb(0, 229, 255)
+                                } else {
+                                    egui::Color32::from_rgb(200, 200, 200)
+                                };
+                                ui.colored_label(
+                                    color,
+                                    egui::RichText::new(format!("• {}:59100  {}", ip, badge)).monospace(),
+                                );
                             }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Tip: Allow Zero Pulse Link through Windows Firewall (TCP 59100 / UDP 59101).")
+                                    .small()
+                                    .weak(),
+                            );
                         });
 
                         ui.separator();
 
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Quick QR Code:").small());
-                            ui.monospace(&self.qr_ascii);
+                            ui.label(egui::RichText::new("📷 Scan with Mobile App:").small().strong());
+                            if let Some((width, ref modules)) = self.qr_matrix {
+                                draw_qr_code(ui, width, modules, 150.0);
+                            } else {
+                                ui.monospace("[QR Unavailable]");
+                            }
                         });
                     });
                 });
@@ -313,7 +353,7 @@ impl eframe::App for PulseLinkGuiApp {
                     });
 
                     if clients_snapshot.is_empty() {
-                        ui.label("No phones currently connected. Open the PulseLink Android app to stream audio.");
+                        ui.label("No phones currently connected. Open the Zero Pulse Link Android app and scan the QR code or connect.");
                     } else {
                         for (cid, client) in clients_snapshot {
                             ui.separator();
@@ -386,12 +426,64 @@ impl eframe::App for PulseLinkGuiApp {
     }
 }
 
-/// Helper to generate ASCII QR code representing primary network IP
-fn generate_qr_ascii(ips: &[String]) -> String {
-    let target = ips.iter().find(|ip| !ip.starts_with("127.")).unwrap_or(&ips[0]);
-    let payload = format!("zeropulselink://{}:59100", target);
-    match qrcode::QrCode::new(payload.as_bytes()) {
-        Ok(code) => code.render::<char>().quiet_zone(false).module_dimensions(1, 1).build(),
-        Err(_) => "[QR Unavailable]".into(),
+/// Generate a crisp boolean QR code matrix encoding primary and fallback local IPs
+fn generate_qr_matrix(ips: &[String]) -> (String, Option<(usize, Vec<bool>)>) {
+    let lan_ips: Vec<&String> = ips.iter().filter(|ip| !ip.starts_with("127.")).collect();
+    let target = lan_ips
+        .first()
+        .copied()
+        .or_else(|| ips.first())
+        .map(|s| s.as_str())
+        .unwrap_or("127.0.0.1");
+
+    let payload = if lan_ips.len() > 1 {
+        let joined: Vec<&str> = lan_ips.iter().map(|s| s.as_str()).collect();
+        format!("zeropulselink://{}:59100?ips={}", target, joined.join(","))
+    } else {
+        format!("zeropulselink://{}:59100", target)
+    };
+
+    let matrix = match qrcode::QrCode::new(payload.as_bytes()) {
+        Ok(code) => {
+            let width = code.width();
+            let modules: Vec<bool> = code
+                .to_colors()
+                .into_iter()
+                .map(|c| c == qrcode::Color::Dark)
+                .collect();
+            Some((width, modules))
+        }
+        Err(_) => None,
+    };
+
+    (payload, matrix)
+}
+
+/// Render a high-contrast graphical QR code (black modules on crisp white canvas with quiet zone)
+fn draw_qr_code(ui: &mut egui::Ui, width: usize, modules: &[bool], display_size: f32) {
+    let quiet = 3usize;
+    let total_modules = width + quiet * 2;
+    let module_px = (display_size / total_modules as f32).floor().max(2.0);
+    let actual_size = module_px * total_modules as f32;
+
+    let (rect, _response) =
+        ui.allocate_exact_size(egui::vec2(actual_size, actual_size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    // Pure white background (includes quiet zone)
+    painter.rect_filled(rect, 4.0, egui::Color32::WHITE);
+
+    // Pure black QR modules
+    for y in 0..width {
+        for x in 0..width {
+            if modules[y * width + x] {
+                let min = egui::pos2(
+                    rect.min.x + (x + quiet) as f32 * module_px,
+                    rect.min.y + (y + quiet) as f32 * module_px,
+                );
+                let max = egui::pos2(min.x + module_px, min.y + module_px);
+                painter.rect_filled(egui::Rect::from_min_max(min, max), 0.0, egui::Color32::BLACK);
+            }
+        }
     }
 }
