@@ -79,20 +79,20 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Build Android APK
+      - name: Build Android APK (Signed Release)
         working-directory: android-client
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
-          gradle assembleDebug --no-daemon --stacktrace
+          gradle assembleRelease --no-daemon --stacktrace
 
       - name: Prepare APK Artifact
         run: |
-          echo "Finding generated APK..."
+          echo "Finding generated release APK..."
           find . -name "*.apk"
-          APK_PATH=$(find . -name "*.apk" | grep -i "debug" | head -n 1)
+          APK_PATH=$(find . -name "*.apk" | grep -i "release" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             APK_PATH=$(find . -name "*.apk" | head -n 1)
           fi
@@ -107,8 +107,8 @@ jobs:
           path: ZeroPulseLink-Android.apk
           if-no-files-found: error
 
-  publish-pre-release:
-    name: Create GitHub Pre-Release
+  publish-release:
+    name: Create GitHub Release
     needs: [build-desktop-windows, build-android-apk]
     if: always() && (needs.build-desktop-windows.result == 'success' || needs.build-android-apk.result == 'success')
     runs-on: ubuntu-latest
@@ -131,32 +131,35 @@ jobs:
       - name: List Release Files
         run: ls -la
 
-      - name: Create GitHub Pre-Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-pre
-          name: "Zero Pulse Link v1.0.0-pre (Lossless Audio Suite)"
-          prerelease: true
+          tag_name: v1.0.0
+          name: "Zero Pulse Link v1.0.0 (Official Release)"
+          prerelease: false
           draft: false
+          make_latest: "true"
           files: |
             ZeroPulseLink-Windows-x86_64.exe
             ZeroPulseLink-Android.apk
           fail_on_unmatched_files: false
           body: |
-            # ⚡ Zero Pulse Link v1.0.0-pre
+            # ⚡ Zero Pulse Link v1.0.0 (Official Release)
 
             Turn your smartphone into a lossless wireless & wired PC speaker with sub-10ms latency.
 
             ### 📦 Download Pre-Compiled Binaries:
-            * **Windows PC Executable**: [`ZeroPulseLink-Windows-x86_64.exe`](https://github.com/${{ github.repository }}/releases/download/v1.0.0-pre/ZeroPulseLink-Windows-x86_64.exe)
-            * **Android Mobile App**: [`ZeroPulseLink-Android.apk`](https://github.com/${{ github.repository }}/releases/download/v1.0.0-pre/ZeroPulseLink-Android.apk)
+            * **Windows PC Executable**: [`ZeroPulseLink-Windows-x86_64.exe`](https://github.com/${{ github.repository }}/releases/download/v1.0.0/ZeroPulseLink-Windows-x86_64.exe)
+            * **Android Mobile App**: [`ZeroPulseLink-Android.apk`](https://github.com/${{ github.repository }}/releases/download/v1.0.0/ZeroPulseLink-Android.apk)
 
             ---
 
             ### 🌟 Key Highlights:
-            * **100% Free & Open-Source (MIT)**: Zero paywalls, zero ads, and zero artificial limits.
+            * **Official Signed Release**: Production release signed with custom release keystore (`isDebuggable = false`).
+            * **Android 15 16KB Page Compatible**: Fully compliant with 16KB ELF segment memory page alignment.
+            * **100% Free & Open-Source (MIT)**: Zero paywalls, zero ads, zero artificial limits.
             * **Zero Data Collection**: No telemetry recorded, no audio stored, strictly peer-to-peer over local network/USB.
             * **Lossless Quality**: 16-bit & 24-bit PCM at 44.1kHz, 48kHz, and 96kHz.
-            * **One-Click USB ADB Mode**: <5ms latency over USB cable without carrier tethering plan restrictions.
+            * **One-Click USB ADB Mode**: Sub-5ms latency over USB cable without carrier tethering plan restrictions.
             * **Multi-Device Stereo Routing**: Use two phones as dedicated Left and Right desk monitors.
             * **Soft-Clipping Volume Boost**: Up to +15dB boost with analogue-style soft limiting.

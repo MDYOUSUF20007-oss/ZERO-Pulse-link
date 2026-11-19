@@ -24,3 +24,8 @@ target_link_libraries(pulselink_engine
     ${aaudio-lib}
     ${opensles-lib}
 )
+
+# Enforce 16KB ELF page alignment for Android 15 (API 35+) compatibility
+target_link_options(pulselink_engine PRIVATE
+    "-Wl,-z,max-page-size=16384"
+)
