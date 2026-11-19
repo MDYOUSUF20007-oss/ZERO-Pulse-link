@@ -88,6 +88,11 @@ bool PulseLinkEngine::start() {
         return false;
     }
 
+    int32_t actualRate = AAudioStream_getSampleRate(mAudioStream);
+    if (actualRate > 0) {
+        mSampleRate = static_cast<uint32_t>(actualRate);
+    }
+
     mIsPlaying.store(true, std::memory_order_relaxed);
     LOGI("PulseLink AAudio Low-Latency Engine started at %u Hz, %d channels", mSampleRate, mChannels);
     return true;
@@ -185,7 +190,7 @@ aaudio_data_callback_result_t PulseLinkEngine::onAudioCallback(
     // 1. Update PI Resampler Clock Drift Controller
     const float currentFillMs = mJitterBuffer->getCurrentFillMs();
     const float dtSeconds = static_cast<float>(numFrames) / static_cast<float>(mSampleRate);
-    const float ratio = mResampler->updateRatio(currentFillMs, dtSeconds);
+    const float ratio = mJitterBuffer->isBuffering() ? 1.0f : mResampler->updateRatio(currentFillMs, dtSeconds);
     const double step = static_cast<double>(ratio);
 
     // 2. Pull exact number of input frames required for glitch-free linear interpolation
@@ -283,13 +288,12 @@ aaudio_data_callback_result_t PulseLinkEngine::onAudioCallback(
 }
 
 float PulseLinkEngine::softClip(float sample) {
-    float x = std::clamp(sample, -1.5f, 1.5f);
-    if (x > 1.0f) {
-        return 1.0f - (1.0f / (1.0f + (x - 1.0f))) * 0.25f;
-    } else if (x < -1.0f) {
-        return -1.0f + (1.0f / (1.0f + (-x - 1.0f))) * 0.25f;
+    if (sample > 1.0f) {
+        return 1.0f + std::tanh(sample - 1.0f) * 0.2f;
+    } else if (sample < -1.0f) {
+        return -1.0f + std::tanh(sample + 1.0f) * 0.2f;
     } else {
-        return x - (x * x * x) / 6.0f;
+        return sample; // 100% Bit-perfect lossless transparency when within standard range
     }
 }
 

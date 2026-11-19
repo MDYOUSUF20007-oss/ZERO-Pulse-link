@@ -40,6 +40,7 @@ public:
     float getCurrentFillMs() const;
     float getPacketLossPct();
     uint32_t getUnderrunCount() const { return mUnderrunCount.load(std::memory_order_relaxed); }
+    bool isBuffering() const { return mIsBuffering.load(std::memory_order_relaxed); }
     void reset();
 
 private:
@@ -51,6 +52,7 @@ private:
 
     uint32_t mExpectedSequence;
     bool mHasFirstPacket;
+    std::atomic<bool> mIsBuffering{true};
 
     // Telemetry counters
     std::atomic<uint32_t> mPacketsReceived{0};

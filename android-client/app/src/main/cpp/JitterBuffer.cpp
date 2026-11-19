@@ -37,6 +37,11 @@ bool JitterBuffer::pushPacket(uint32_t sequence, uint64_t /*timestampUs*/,
         mHasFirstPacket = true;
     } else {
         int32_t diff = static_cast<int32_t>(sequence - mExpectedSequence);
+        if (diff < 0) {
+            // Late out-of-order packet arriving after sequence has already advanced:
+            // Discard to prevent audible backwards time glitching
+            return false;
+        }
         if (diff > 1) {
             // Gap detected: increment lost packet count
             mPacketsLost.fetch_add(diff - 1, std::memory_order_relaxed);
@@ -52,11 +57,27 @@ bool JitterBuffer::pushPacket(uint32_t sequence, uint64_t /*timestampUs*/,
     }
 
     size_t written = mRingBuffer.write(pcmData, sampleCount);
+
+    // If pre-buffering, check if target fill level is reached
+    if (mIsBuffering.load(std::memory_order_relaxed)) {
+        if (getCurrentFillMs() >= getTargetFillMs()) {
+            mIsBuffering.store(false, std::memory_order_release);
+        }
+    }
+
     return written == sampleCount;
 }
 
 size_t JitterBuffer::pullFrames(int16_t* output, size_t frameCount) {
     const size_t requestedSamples = frameCount * mChannels;
+
+    // During pre-buffering (startup or after deep underrun), output silence
+    // to allow the jitter buffer to accumulate target fill level
+    if (mIsBuffering.load(std::memory_order_acquire)) {
+        std::memset(output, 0, requestedSamples * sizeof(int16_t));
+        return frameCount;
+    }
+
     size_t readSamples = mRingBuffer.read(output, requestedSamples);
 
     if (readSamples < requestedSamples) {
@@ -64,6 +85,11 @@ size_t JitterBuffer::pullFrames(int16_t* output, size_t frameCount) {
         mUnderrunCount.fetch_add(1, std::memory_order_relaxed);
         size_t missingSamples = requestedSamples - readSamples;
         generatePlc(output + readSamples, missingSamples / mChannels);
+
+        // If buffer completely emptied, re-enter buffering to prevent continuous micro-stutter
+        if (readSamples == 0) {
+            mIsBuffering.store(true, std::memory_order_release);
+        }
     }
 
     return frameCount;
@@ -85,6 +111,11 @@ void JitterBuffer::generatePlc(int16_t* destination, size_t frameCount) {
             destination[f * mChannels + ch] = static_cast<int16_t>(std::clamp(val, -32768.0f, 32767.0f));
         }
     }
+
+    // Once faded to zero, clear last good samples to prevent repetitive pulse clicks
+    for (int ch = 0; ch < mChannels; ++ch) {
+        mLastGoodSamples[ch] = 0;
+    }
 }
 
 float JitterBuffer::getCurrentFillMs() const {
@@ -104,6 +135,7 @@ float JitterBuffer::getPacketLossPct() {
 void JitterBuffer::reset() {
     mRingBuffer.reset();
     mHasFirstPacket = false;
+    mIsBuffering.store(true, std::memory_order_release);
     mPacketsReceived.store(0, std::memory_order_relaxed);
     mPacketsLost.store(0, std::memory_order_relaxed);
     mUnderrunCount.store(0, std::memory_order_relaxed);

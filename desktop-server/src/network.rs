@@ -102,14 +102,9 @@ impl NetworkManager {
             // 2. Stereo routing
             CodecFramer::apply_stereo_routing(&mut processed_pcm, &client.stereo_routing);
 
-            // 3. Client Volume & Mute
+            // 3. Client Volume & Mute (Mute applied on server; volume scaling applied on phone for instant zero-latency touch response)
             if client.muted {
                 processed_pcm.fill(0);
-            } else if (client.volume - 1.0).abs() > 0.001 {
-                protocol_common::SoftLimiterVolume::apply_to_pcm16(
-                    &mut processed_pcm,
-                    protocol_common::SoftLimiterVolume::slider_to_gain(client.volume),
-                );
             }
 
             // 4. Encode audio payload

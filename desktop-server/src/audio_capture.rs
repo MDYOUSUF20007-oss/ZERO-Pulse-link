@@ -64,13 +64,21 @@ impl AudioCaptureEngine {
         let sample_format = default_config.sample_format();
 
         // Sync active server config sample rate with actual WASAPI loopback capture rate
-        if let Some(sr) = protocol_common::SampleRate::from_hz(sample_rate) {
+        let target_rate = if let Some(sr) = protocol_common::SampleRate::from_hz(sample_rate) {
             let state_cfg = Arc::clone(&self.state);
             let rt_handle = tokio::runtime::Handle::current();
             rt_handle.spawn(async move {
                 state_cfg.config.write().await.sample_rate = sr;
             });
-        }
+            sr.hz()
+        } else {
+            let state_cfg = Arc::clone(&self.state);
+            let rt_handle = tokio::runtime::Handle::current();
+            rt_handle.spawn(async move {
+                state_cfg.config.write().await.sample_rate = protocol_common::SampleRate::Rate48000;
+            });
+            48000
+        };
 
         // Use BufferSize::Default for universal Windows WASAPI loopback compatibility;
         // we chunk outbound frames to 240 frames (976-byte UDP packets) below MTU.
@@ -110,7 +118,7 @@ impl AudioCaptureEngine {
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _| {
-                        Self::process_f32_samples(data, channels, &state_clone, &pcm_tx);
+                        Self::process_f32_samples(data, channels, sample_rate, target_rate, &state_clone, &pcm_tx);
                     },
                     err_fn,
                     None,
@@ -120,7 +128,7 @@ impl AudioCaptureEngine {
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[i16], _| {
-                        Self::process_i16_samples(data, channels, &state_clone, &pcm_tx);
+                        Self::process_i16_samples(data, channels, sample_rate, target_rate, &state_clone, &pcm_tx);
                     },
                     err_fn,
                     None,
@@ -141,6 +149,8 @@ impl AudioCaptureEngine {
     fn process_f32_samples(
         data: &[f32],
         channels: u16,
+        sample_rate: u32,
+        target_rate: u32,
         state: &Arc<AppState>,
         tx: &mpsc::Sender<Vec<i16>>,
     ) {
@@ -184,12 +194,21 @@ impl AudioCaptureEngine {
         }
 
         state.update_vu(left_max, right_max);
-        let _ = tx.try_send(pcm16);
+
+        if sample_rate != target_rate {
+            let mut resampled = Vec::new();
+            crate::codecs::CodecFramer::resample_linear(&pcm16, sample_rate, target_rate, 2, &mut resampled);
+            let _ = tx.try_send(resampled);
+        } else {
+            let _ = tx.try_send(pcm16);
+        }
     }
 
     fn process_i16_samples(
         data: &[i16],
         channels: u16,
+        sample_rate: u32,
+        target_rate: u32,
         state: &Arc<AppState>,
         tx: &mpsc::Sender<Vec<i16>>,
     ) {
@@ -231,7 +250,14 @@ impl AudioCaptureEngine {
         }
 
         state.update_vu(left_max, right_max);
-        let _ = tx.try_send(pcm16);
+
+        if sample_rate != target_rate {
+            let mut resampled = Vec::new();
+            crate::codecs::CodecFramer::resample_linear(&pcm16, sample_rate, target_rate, 2, &mut resampled);
+            let _ = tx.try_send(resampled);
+        } else {
+            let _ = tx.try_send(pcm16);
+        }
     }
 
     /// Toggles PC hardware speaker mute without muting the loopback capture
