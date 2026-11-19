@@ -26,6 +26,9 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Starting Zero Pulse Link Audio Server v1.0.0...");
 
+    #[cfg(windows)]
+    ensure_windows_firewall_rules();
+
     let state = AppState::new();
 
     // 1. Initialize ADB Controller & start background monitor
@@ -486,4 +489,22 @@ fn draw_qr_code(ui: &mut egui::Ui, width: usize, modules: &[bool], display_size:
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn ensure_windows_firewall_rules() {
+    std::thread::spawn(|| {
+        let _ = std::process::Command::new("netsh")
+            .args(["advfirewall", "firewall", "add", "rule", "name=Zero Pulse Link (TCP 59100)", "dir=in", "action=allow", "protocol=TCP", "localport=59100", "profile=any"])
+            .output();
+        let _ = std::process::Command::new("netsh")
+            .args(["advfirewall", "firewall", "add", "rule", "name=Zero Pulse Link (UDP 59100-59101)", "dir=in", "action=allow", "protocol=UDP", "localport=59100,59101", "profile=any"])
+            .output();
+        if let Ok(exe_path) = std::env::current_exe() {
+            let prog_arg = format!("program={}", exe_path.to_string_lossy());
+            let _ = std::process::Command::new("netsh")
+                .args(["advfirewall", "firewall", "add", "rule", "name=Zero Pulse Link (EXE)", "dir=in", "action=allow", &prog_arg, "enable=yes", "profile=any"])
+                .output();
+        }
+    });
 }

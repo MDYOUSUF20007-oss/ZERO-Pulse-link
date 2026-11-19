@@ -78,6 +78,17 @@ size_t JitterBuffer::pullFrames(int16_t* output, size_t frameCount) {
         return frameCount;
     }
 
+    // Fast-Forward / Backlog Catch-up:
+    // If network/USB jitter bursts caused buffer fill to exceed 2.5x target fill,
+    // smoothly drain the stale excess samples down to target fill so latency never drifts.
+    float currentFill = getCurrentFillMs();
+    float targetFill = getTargetFillMs();
+    if (currentFill > targetFill * 2.5f) {
+        float excessMs = currentFill - targetFill;
+        size_t excessFrames = static_cast<size_t>((excessMs * static_cast<float>(mSampleRate)) / 1000.0f);
+        mRingBuffer.skip(excessFrames * mChannels);
+    }
+
     size_t readSamples = mRingBuffer.read(output, requestedSamples);
 
     if (readSamples < requestedSamples) {

@@ -67,7 +67,8 @@ class ControlClient(
                     Log.i(tag, "Attempting TCP Control connection to $candidate:$port ...")
                     val attempt = Socket()
                     attempt.tcpNoDelay = true
-                    attempt.connect(InetSocketAddress(candidate, port), 3500)
+                    attempt.keepAlive = true
+                    attempt.connect(InetSocketAddress(candidate, port), 5000)
                     sock = attempt
                     connectedHost = candidate
                     break
@@ -187,7 +188,8 @@ class ControlClient(
             var seq = 0
             while (isActive && _isConnected.value) {
                 try {
-                    val pingTime = System.currentTimeMillis() * 1000L
+                    // Use monotonic high-precision nanoseconds converted to microseconds
+                    val pingTime = System.nanoTime() / 1000L
                     val pingObj = JSONObject().apply {
                         put("type", "ping")
                         val data = JSONObject().apply {
@@ -218,7 +220,7 @@ class ControlClient(
                     Log.w(tag, "Telemetry loop ended: ${e.message}")
                     break
                 }
-                delay(1000)
+                delay(500)
             }
         }
     }
@@ -253,9 +255,12 @@ class ControlClient(
                 }
                 "pong" -> {
                     val pingTime = data.optLong("ping_timestamp_us")
-                    val now = System.currentTimeMillis() * 1000L
-                    val rtt = ((now - pingTime) / 1000f).coerceAtLeast(0f)
-                    _rttMs.value = rtt
+                    val now = System.nanoTime() / 1000L
+                    val rawRtt = ((now - pingTime) / 1000f).coerceIn(0.1f, 300f)
+                    val prev = _rttMs.value
+                    // Exponential Moving Average filter (alpha=0.3) to reject OS thread context-switch spikes
+                    val smoothed = if (prev <= 0.1f) rawRtt else (prev * 0.7f + rawRtt * 0.3f)
+                    _rttMs.value = smoothed
                 }
             }
         } catch (e: Exception) {

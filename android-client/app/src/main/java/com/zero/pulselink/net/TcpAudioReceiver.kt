@@ -3,6 +3,7 @@ package com.zero.pulselink.net
 import android.util.Log
 import com.zero.pulselink.engine.NativeAudioEngine
 import kotlinx.coroutines.*
+import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -24,20 +25,21 @@ class TcpAudioReceiver(
             try {
                 val sock = Socket()
                 sock.tcpNoDelay = true
+                sock.receiveBufferSize = 65536
                 sock.connect(InetSocketAddress(host, port), 3000)
                 socket = sock
                 Log.i(tag, "Zero Pulse Link TCP-NoDelay Audio Tunnel connected to $host:$port")
 
-                val input = DataInputStream(sock.getInputStream())
+                val input = DataInputStream(BufferedInputStream(sock.getInputStream(), 16384))
                 val buffer = ByteArray(8192)
+                val lenBuf = ByteArray(4)
 
                 while (isActive) {
-                    // 4 bytes packet length (Little Endian)
-                    val b0 = input.readUnsignedByte()
-                    val b1 = input.readUnsignedByte()
-                    val b2 = input.readUnsignedByte()
-                    val b3 = input.readUnsignedByte()
-                    val packetLen = b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24)
+                    input.readFully(lenBuf, 0, 4)
+                    val packetLen = (lenBuf[0].toInt() and 0xFF) or
+                            ((lenBuf[1].toInt() and 0xFF) shl 8) or
+                            ((lenBuf[2].toInt() and 0xFF) shl 16) or
+                            ((lenBuf[3].toInt() and 0xFF) shl 24)
 
                     if (packetLen in 16..buffer.size) {
                         input.readFully(buffer, 0, packetLen)

@@ -90,6 +90,20 @@ public:
         return toRead;
     }
 
+    /**
+     * Skip/discard elements from ring buffer (Called by audio consumer thread to drain backlog).
+     * @return Number of elements actually skipped.
+     */
+    size_t skip(size_t count) noexcept {
+        const size_t available = getAvailableRead();
+        const size_t toSkip = std::min(count, available);
+        if (toSkip == 0) return 0;
+
+        const size_t readIdx = mReadIndex.load(std::memory_order_relaxed);
+        mReadIndex.store(readIdx + toSkip, std::memory_order_release);
+        return toSkip;
+    }
+
     void reset() noexcept {
         mWriteIndex.store(0, std::memory_order_relaxed);
         mReadIndex.store(0, std::memory_order_relaxed);
