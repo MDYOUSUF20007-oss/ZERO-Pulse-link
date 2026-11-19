@@ -115,8 +115,16 @@ class MainActivity : ComponentActivity() {
 
     private fun bindAudioService() {
         val intent = Intent(this, AudioStreamForegroundService::class.java)
-        startService(intent)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        try {
+            startService(intent)
+        } catch (e: Exception) {
+            Log.w("ZeroPulseLink", "startService deferred until foreground: ${e.message}")
+        }
+        try {
+            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            Log.e("ZeroPulseLink", "bindService error: ${e.message}")
+        }
     }
 
     override fun onResume() {
